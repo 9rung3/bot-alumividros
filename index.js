@@ -1,6 +1,5 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const Anthropic = require('@anthropic-ai/sdk');
 const express = require('express');
+const Anthropic = require('@anthropic-ai/sdk');
 
 console.log('🚀 Iniciando Bot Alumividros...');
 
@@ -11,36 +10,14 @@ const anthropic = new Anthropic({
 
 console.log('✅ Claude configurado');
 
-// Configuração otimizada para Railway
-const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: '/tmp/.wwebjs_auth'
-    }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
-        ],
-        executablePath: process.env.CHROME_BIN || null
-    }
-});
-
-console.log('✅ WhatsApp Client configurado');
-
 // Contexto para Claude
 const contextoPadrao = `
 Você é o chatbot da Alumividros, vidraçaria do Douglas em Tiros/MG.
 Tom: bem descontraído, simpático e próximo do cliente.
+
+COMO SE APRESENTAR:
+- "Oi! Sou o chatbot da Alumividros! 😊"
+- "Tô aqui pra facilitar sua vida com orçamentos e dúvidas 24h por dia!"
 
 INFORMAÇÕES PRINCIPAIS:
 - Endereço: Rua Padre José Coelho, 625, Tiros, MG - CEP: 38880-000
@@ -81,103 +58,130 @@ REGRAS:
 - Douglas pode estar disponível fora do horário comercial
 - Sempre colete nome, endereço e telefone para orçamentos
 - Seja descontraído mas profissional
-- Faça cálculos quando o cliente fornecer medidas
+- Faça cálculos quando o cliente fornecer medidas (ex: espelho 1,5x2m = 3m² x R$ 350 = R$ 1.050)
+- Ofereça sempre as duas opções de preço para espelhos (com instalação e buscar na loja com desconto)
 `;
-
-// Event handlers
-client.on('qr', (qr) => {
-    console.log('📱 QR Code gerado:');
-    console.log(qr);
-    console.log('👆 Escaneie o QR code acima com seu WhatsApp');
-});
-
-client.on('ready', () => {
-    console.log('🤖 Bot Alumividros conectado e funcionando!');
-});
-
-client.on('authenticated', () => {
-    console.log('✅ WhatsApp autenticado com sucesso');
-});
-
-client.on('auth_failure', (msg) => {
-    console.error('❌ Falha na autenticação:', msg);
-});
-
-client.on('disconnected', (reason) => {
-    console.log('🔌 WhatsApp desconectado:', reason);
-});
-
-client.on('message', async (message) => {
-    // Só responde mensagens privadas
-    if (!message.from.includes('@c.us')) return;
-    if (message.fromMe) return;
-    
-    try {
-        console.log(`📩 Mensagem de ${message.from}: ${message.body}`);
-        
-        // Processar com Claude
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 1000,
-            messages: [{
-                role: 'user',
-                content: `${contextoPadrao}\n\nCliente: ${message.body}\n\nResponda como o chatbot da Alumividros. Faça cálculos quando possível e colete dados para orçamentos.`
-            }]
-        });
-        
-        let resposta = response.content[0].text;
-        
-        // Se Claude não conseguir resolver
-        if (resposta.includes('não consigo') || resposta.includes('não sei')) {
-            resposta += `\n\n👤 **O Douglas vai entrar em contato com você para resolver!**`;
-        }
-        
-        await message.reply(resposta);
-        console.log(`✅ Resposta enviada para ${message.from}`);
-        
-        // Delay humano
-        await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
-        
-    } catch (error) {
-        console.error('❌ Erro ao processar mensagem:', error);
-        try {
-            await message.reply('Ops! Tive um probleminha técnico. 😅\nO Douglas vai entrar em contato com você!');
-        } catch (replyError) {
-            console.error('❌ Erro ao enviar resposta de erro:', replyError);
-        }
-    }
-});
-
-// Inicializar WhatsApp
-console.log('🔄 Inicializando WhatsApp...');
-client.initialize().catch(error => {
-    console.error('❌ Erro ao inicializar WhatsApp:', error);
-});
 
 // Servidor Express
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.use(express.json());
+
+// Rota principal
 app.get('/', (req, res) => {
     res.json({
-        status: 'Bot Alumividros funcionando! 🤖',
-        timestamp: new Date().toISOString()
+        status: '🤖 Bot Alumividros funcionando!',
+        message: 'Sistema ativo e pronto para receber mensagens',
+        timestamp: new Date().toISOString(),
+        whatsapp: 'Aguardando integração',
+        claude: 'Conectado'
     });
 });
 
+// Rota de saúde
 app.get('/health', (req, res) => {
-    res.json({ status: 'OK', bot: 'Alumividros' });
+    res.json({ 
+        status: 'OK', 
+        bot: 'Alumividros',
+        claude: anthropic ? 'Connected' : 'Disconnected'
+    });
+});
+
+// Rota para testar Claude
+app.post('/test-claude', async (req, res) => {
+    try {
+        const { message } = req.body;
+        
+        if (!message) {
+            return res.json({ error: 'Envie uma mensagem no campo "message"' });
+        }
+
+        console.log(`🧪 Teste do Claude: ${message}`);
+        
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1000,
+            messages: [{
+                role: 'user',
+                content: `${contextoPadrao}\n\nCliente: ${message}\n\nResponda como o chatbot da Alumividros.`
+            }]
+        });
+        
+        let resposta = response.content[0].text;
+        
+        console.log(`✅ Resposta do Claude: ${resposta.substring(0, 100)}...`);
+        
+        res.json({
+            success: true,
+            input: message,
+            response: resposta,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro ao testar Claude:', error);
+        res.status(500).json({
+            error: 'Erro ao processar mensagem',
+            details: error.message
+        });
+    }
+});
+
+// Rota para simular WhatsApp (para testes)
+app.post('/whatsapp-webhook', async (req, res) => {
+    try {
+        const { message, from } = req.body;
+        
+        console.log(`📱 Simulação WhatsApp de ${from}: ${message}`);
+        
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1000,
+            messages: [{
+                role: 'user',
+                content: `${contextoPadrao}\n\nCliente: ${message}\n\nResponda como o chatbot da Alumividros.`
+            }]
+        });
+        
+        let resposta = response.content[0].text;
+        
+        if (resposta.includes('não consigo') || resposta.includes('não sei')) {
+            resposta += `\n\n👤 **O Douglas vai entrar em contato com você para resolver!**`;
+        }
+        
+        console.log(`✅ Resposta enviada para ${from}`);
+        
+        res.json({
+            success: true,
+            from: from,
+            message: message,
+            response: resposta,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro:', error);
+        res.status(500).json({
+            error: 'Erro ao processar mensagem',
+            details: error.message
+        });
+    }
 });
 
 const server = app.listen(PORT, () => {
     console.log(`🚀 Servidor HTTP rodando na porta ${PORT}`);
+    console.log(`🌐 URL: https://bot-alumividros-production.up.railway.app`);
+    console.log(`🧪 Teste Claude: POST /test-claude com {"message": "oi"}`);
+    console.log(`📱 Webhook WhatsApp: POST /whatsapp-webhook`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-    console.log('🛑 Recebido SIGTERM, finalizando...');
+    console.log('🛑 Finalizando servidor...');
     server.close(() => {
-        client.destroy();
         process.exit(0);
     });
 });
+
+console.log('✅ Bot Alumividros inicializado com sucesso!');
