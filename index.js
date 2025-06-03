@@ -62,6 +62,123 @@ REGRAS:
 - Ofereça sempre as duas opções de preço para espelhos (com instalação e buscar na loja com desconto)
 `;
 
+// Variável para controlar WhatsApp
+let whatsappClient = null;
+let whatsappStatus = 'Desconectado';
+
+// Tentar inicializar WhatsApp (com fallback)
+async function inicializarWhatsApp() {
+    try {
+        console.log('📱 Tentando carregar WhatsApp Web...');
+        
+        const { Client, LocalAuth } = require('whatsapp-web.js');
+        
+        whatsappClient = new Client({
+            authStrategy: new LocalAuth({
+                dataPath: '/tmp/.wwebjs_auth'
+            }),
+            puppeteer: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu'
+                ]
+            }
+        });
+
+        whatsappClient.on('qr', (qr) => {
+            console.log('📱 QR Code gerado:');
+            console.log(qr);
+            whatsappStatus = 'Aguardando QR';
+        });
+
+        whatsappClient.on('ready', () => {
+            console.log('✅ WhatsApp conectado com sucesso!');
+            whatsappStatus = 'Conectado';
+        });
+
+        whatsappClient.on('authenticated', () => {
+            console.log('✅ WhatsApp autenticado');
+            whatsappStatus = 'Autenticado';
+        });
+
+        whatsappClient.on('auth_failure', (msg) => {
+            console.error('❌ Falha na autenticação WhatsApp:', msg);
+            whatsappStatus = 'Erro de autenticação';
+        });
+
+        whatsappClient.on('disconnected', (reason) => {
+            console.log('🔌 WhatsApp desconectado:', reason);
+            whatsappStatus = 'Desconectado';
+        });
+
+        whatsappClient.on('message', async (message) => {
+            if (!message.from.includes('@c.us')) return;
+            if (message.fromMe) return;
+            
+            try {
+                console.log(`📩 WhatsApp - ${message.from}: ${message.body}`);
+                
+                const resposta = await processarComClaude(message.body);
+                await message.reply(resposta);
+                
+                console.log(`✅ Resposta enviada via WhatsApp`);
+                
+                // Delay humano
+                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+                
+            } catch (error) {
+                console.error('❌ Erro ao processar mensagem WhatsApp:', error);
+                try {
+                    await message.reply('Ops! Tive um probleminha técnico. 😅\nO Douglas vai entrar em contato com você!');
+                } catch (replyError) {
+                    console.error('❌ Erro ao enviar resposta de erro:', replyError);
+                }
+            }
+        });
+
+        await whatsappClient.initialize();
+        console.log('✅ WhatsApp inicializado');
+        
+    } catch (error) {
+        console.error('❌ Erro ao inicializar WhatsApp:', error);
+        console.log('⚠️ Continuando sem WhatsApp Web - usando apenas APIs REST');
+        whatsappStatus = 'Erro - Usando APIs REST';
+    }
+}
+
+// Função para processar mensagens com Claude
+async function processarComClaude(mensagem) {
+    try {
+        const response = await anthropic.messages.create({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1000,
+            messages: [{
+                role: 'user',
+                content: `${contextoPadrao}\n\nCliente: ${mensagem}\n\nResponda como o chatbot da Alumividros.`
+            }]
+        });
+        
+        let resposta = response.content[0].text;
+        
+        if (resposta.includes('não consigo') || resposta.includes('não sei')) {
+            resposta += `\n\n👤 **O Douglas vai entrar em contato com você para resolver!**`;
+        }
+        
+        return resposta;
+        
+    } catch (error) {
+        console.error('❌ Erro ao processar com Claude:', error);
+        return 'Ops! Tive um probleminha técnico. 😅\nO Douglas vai entrar em contato com você!';
+    }
+}
+
 // Servidor Express
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -72,19 +189,28 @@ app.use(express.json());
 app.get('/', (req, res) => {
     res.json({
         status: '🤖 Bot Alumividros funcionando!',
-        message: 'Sistema ativo e pronto para receber mensagens',
+        whatsapp: whatsappStatus,
+        claude: 'Conectado',
         timestamp: new Date().toISOString(),
-        whatsapp: 'Aguardando integração',
-        claude: 'Conectado'
+        endpoints: {
+            test: '/test-claude',
+            whatsapp: '/whatsapp-webhook',
+            status: '/status'
+        }
     });
 });
 
-// Rota de saúde
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
+// Status detalhado
+app.get('/status', (req, res) => {
+    res.json({
         bot: 'Alumividros',
-        claude: anthropic ? 'Connected' : 'Disconnected'
+        whatsapp: {
+            status: whatsappStatus,
+            client: whatsappClient ? 'Carregado' : 'Não carregado'
+        },
+        claude: 'Ativo',
+        server: 'Online',
+        timestamp: new Date().toISOString()
     });
 });
 
@@ -99,16 +225,7 @@ app.post('/test-claude', async (req, res) => {
 
         console.log(`🧪 Teste do Claude: ${message}`);
         
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 1000,
-            messages: [{
-                role: 'user',
-                content: `${contextoPadrao}\n\nCliente: ${message}\n\nResponda como o chatbot da Alumividros.`
-            }]
-        });
-        
-        let resposta = response.content[0].text;
+        const resposta = await processarComClaude(message);
         
         console.log(`✅ Resposta do Claude: ${resposta.substring(0, 100)}...`);
         
@@ -128,29 +245,16 @@ app.post('/test-claude', async (req, res) => {
     }
 });
 
-// Rota para simular WhatsApp (para testes)
+// Webhook para simular WhatsApp
 app.post('/whatsapp-webhook', async (req, res) => {
     try {
         const { message, from } = req.body;
         
-        console.log(`📱 Simulação WhatsApp de ${from}: ${message}`);
+        console.log(`📱 Webhook WhatsApp de ${from}: ${message}`);
         
-        const response = await anthropic.messages.create({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 1000,
-            messages: [{
-                role: 'user',
-                content: `${contextoPadrao}\n\nCliente: ${message}\n\nResponda como o chatbot da Alumividros.`
-            }]
-        });
+        const resposta = await processarComClaude(message);
         
-        let resposta = response.content[0].text;
-        
-        if (resposta.includes('não consigo') || resposta.includes('não sei')) {
-            resposta += `\n\n👤 **O Douglas vai entrar em contato com você para resolver!**`;
-        }
-        
-        console.log(`✅ Resposta enviada para ${from}`);
+        console.log(`✅ Resposta gerada para ${from}`);
         
         res.json({
             success: true,
@@ -171,17 +275,23 @@ app.post('/whatsapp-webhook', async (req, res) => {
 
 const server = app.listen(PORT, () => {
     console.log(`🚀 Servidor HTTP rodando na porta ${PORT}`);
-    console.log(`🌐 URL: https://bot-alumividros-production.up.railway.app`);
-    console.log(`🧪 Teste Claude: POST /test-claude com {"message": "oi"}`);
-    console.log(`📱 Webhook WhatsApp: POST /whatsapp-webhook`);
+    console.log(`🌐 Bot funcionando em: https://bot-alumividros-production.up.railway.app`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('🛑 Finalizando servidor...');
+    if (whatsappClient) {
+        whatsappClient.destroy();
+    }
     server.close(() => {
         process.exit(0);
     });
 });
 
 console.log('✅ Bot Alumividros inicializado com sucesso!');
+
+// Tentar inicializar WhatsApp após 5 segundos
+setTimeout(() => {
+    inicializarWhatsApp();
+}, 5000);
