@@ -2,18 +2,40 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const Anthropic = require('@anthropic-ai/sdk');
 const express = require('express');
 
+console.log('🚀 Iniciando Bot Alumividros...');
+
 // Configurar Claude
 const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+console.log('✅ Claude configurado');
+
+// Configuração otimizada para Railway
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({
+        dataPath: '/tmp/.wwebjs_auth'
+    }),
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding'
+        ],
+        executablePath: process.env.CHROME_BIN || null
     }
 });
+
+console.log('✅ WhatsApp Client configurado');
 
 // Contexto para Claude
 const contextoPadrao = `
@@ -59,14 +81,39 @@ REGRAS:
 - Douglas pode estar disponível fora do horário comercial
 - Sempre colete nome, endereço e telefone para orçamentos
 - Seja descontraído mas profissional
+- Faça cálculos quando o cliente fornecer medidas
 `;
 
+// Event handlers
+client.on('qr', (qr) => {
+    console.log('📱 QR Code gerado:');
+    console.log(qr);
+    console.log('👆 Escaneie o QR code acima com seu WhatsApp');
+});
+
+client.on('ready', () => {
+    console.log('🤖 Bot Alumividros conectado e funcionando!');
+});
+
+client.on('authenticated', () => {
+    console.log('✅ WhatsApp autenticado com sucesso');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('❌ Falha na autenticação:', msg);
+});
+
+client.on('disconnected', (reason) => {
+    console.log('🔌 WhatsApp desconectado:', reason);
+});
+
 client.on('message', async (message) => {
+    // Só responde mensagens privadas
     if (!message.from.includes('@c.us')) return;
     if (message.fromMe) return;
     
     try {
-        console.log(`📩 ${message.from}: ${message.body}`);
+        console.log(`📩 Mensagem de ${message.from}: ${message.body}`);
         
         // Processar com Claude
         const response = await anthropic.messages.create({
@@ -86,37 +133,51 @@ client.on('message', async (message) => {
         }
         
         await message.reply(resposta);
-        console.log(`✅ Resposta enviada`);
+        console.log(`✅ Resposta enviada para ${message.from}`);
         
         // Delay humano
         await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
         
     } catch (error) {
-        console.error('❌ Erro:', error);
-        await message.reply('Ops! Probleminha técnico. 😅\nO Douglas vai entrar em contato!');
+        console.error('❌ Erro ao processar mensagem:', error);
+        try {
+            await message.reply('Ops! Tive um probleminha técnico. 😅\nO Douglas vai entrar em contato com você!');
+        } catch (replyError) {
+            console.error('❌ Erro ao enviar resposta de erro:', replyError);
+        }
     }
 });
 
-// Inicializar bot
-client.on('ready', () => {
-    console.log('🤖 Bot Alumividros funcionando!');
+// Inicializar WhatsApp
+console.log('🔄 Inicializando WhatsApp...');
+client.initialize().catch(error => {
+    console.error('❌ Erro ao inicializar WhatsApp:', error);
 });
-
-client.on('qr', (qr) => {
-    console.log('📱 QR Code para escanear:');
-    console.log(qr);
-});
-
-client.initialize();
 
 // Servidor Express
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('🤖 Bot Alumividros rodando!');
+    res.json({
+        status: 'Bot Alumividros funcionando! 🤖',
+        timestamp: new Date().toISOString()
+    });
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor na porta ${PORT}`);
+app.get('/health', (req, res) => {
+    res.json({ status: 'OK', bot: 'Alumividros' });
+});
+
+const server = app.listen(PORT, () => {
+    console.log(`🚀 Servidor HTTP rodando na porta ${PORT}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('🛑 Recebido SIGTERM, finalizando...');
+    server.close(() => {
+        client.destroy();
+        process.exit(0);
+    });
 });
