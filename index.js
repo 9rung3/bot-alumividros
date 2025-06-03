@@ -1,7 +1,8 @@
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
+const qrcode = require('qrcode');
 
-console.log('🚀 Iniciando Bot Alumividros...');
+console.log('🚀 Iniciando Bot Alumividros com QR Web...');
 
 // Configurar Claude
 const anthropic = new Anthropic({
@@ -9,6 +10,12 @@ const anthropic = new Anthropic({
 });
 
 console.log('✅ Claude configurado');
+
+// Variáveis para WhatsApp
+let whatsappClient = null;
+let whatsappStatus = 'Desconectado';
+let currentQR = null;
+let qrImageData = null;
 
 // Contexto para Claude
 const contextoPadrao = `
@@ -58,18 +65,14 @@ REGRAS:
 - Douglas pode estar disponível fora do horário comercial
 - Sempre colete nome, endereço e telefone para orçamentos
 - Seja descontraído mas profissional
-- Faça cálculos quando o cliente fornecer medidas (ex: espelho 1,5x2m = 3m² x R$ 350 = R$ 1.050)
-- Ofereça sempre as duas opções de preço para espelhos (com instalação e buscar na loja com desconto)
+- Faça cálculos quando o cliente fornecer medidas
+- Ofereça sempre as duas opções de preço para espelhos
 `;
 
-// Variável para controlar WhatsApp
-let whatsappClient = null;
-let whatsappStatus = 'Desconectado';
-
-// Tentar inicializar WhatsApp (com fallback)
+// Função para inicializar WhatsApp
 async function inicializarWhatsApp() {
     try {
-        console.log('📱 Tentando carregar WhatsApp Web...');
+        console.log('📱 Carregando WhatsApp Web...');
         
         const { Client, LocalAuth } = require('whatsapp-web.js');
         
@@ -87,20 +90,40 @@ async function inicializarWhatsApp() {
                     '--no-first-run',
                     '--no-zygote',
                     '--single-process',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding'
                 ]
             }
         });
 
-        whatsappClient.on('qr', (qr) => {
-            console.log('📱 QR Code gerado:');
-            console.log(qr);
-            whatsappStatus = 'Aguardando QR';
+        whatsappClient.on('qr', async (qr) => {
+            console.log('📱 QR Code gerado!');
+            currentQR = qr;
+            whatsappStatus = 'Aguardando QR Code';
+            
+            try {
+                // Gerar imagem do QR code
+                qrImageData = await qrcode.toDataURL(qr, {
+                    width: 256,
+                    margin: 2,
+                    color: {
+                        dark: '#000000',
+                        light: '#FFFFFF'
+                    }
+                });
+                console.log('✅ QR Code convertido para imagem');
+            } catch (err) {
+                console.error('❌ Erro ao gerar QR image:', err);
+            }
         });
 
         whatsappClient.on('ready', () => {
-            console.log('✅ WhatsApp conectado com sucesso!');
+            console.log('🎉 WhatsApp conectado com sucesso!');
             whatsappStatus = 'Conectado';
+            currentQR = null;
+            qrImageData = null;
         });
 
         whatsappClient.on('authenticated', () => {
@@ -109,13 +132,17 @@ async function inicializarWhatsApp() {
         });
 
         whatsappClient.on('auth_failure', (msg) => {
-            console.error('❌ Falha na autenticação WhatsApp:', msg);
+            console.error('❌ Falha na autenticação:', msg);
             whatsappStatus = 'Erro de autenticação';
+            currentQR = null;
+            qrImageData = null;
         });
 
         whatsappClient.on('disconnected', (reason) => {
             console.log('🔌 WhatsApp desconectado:', reason);
             whatsappStatus = 'Desconectado';
+            currentQR = null;
+            qrImageData = null;
         });
 
         whatsappClient.on('message', async (message) => {
@@ -134,7 +161,7 @@ async function inicializarWhatsApp() {
                 await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
                 
             } catch (error) {
-                console.error('❌ Erro ao processar mensagem WhatsApp:', error);
+                console.error('❌ Erro ao processar mensagem:', error);
                 try {
                     await message.reply('Ops! Tive um probleminha técnico. 😅\nO Douglas vai entrar em contato com você!');
                 } catch (replyError) {
@@ -148,12 +175,11 @@ async function inicializarWhatsApp() {
         
     } catch (error) {
         console.error('❌ Erro ao inicializar WhatsApp:', error);
-        console.log('⚠️ Continuando sem WhatsApp Web - usando apenas APIs REST');
-        whatsappStatus = 'Erro - Usando APIs REST';
+        whatsappStatus = 'Erro - APIs REST apenas';
     }
 }
 
-// Função para processar mensagens com Claude
+// Função para processar com Claude
 async function processarComClaude(mensagem) {
     try {
         const response = await anthropic.messages.create({
@@ -174,7 +200,7 @@ async function processarComClaude(mensagem) {
         return resposta;
         
     } catch (error) {
-        console.error('❌ Erro ao processar com Claude:', error);
+        console.error('❌ Erro Claude:', error);
         return 'Ops! Tive um probleminha técnico. 😅\nO Douglas vai entrar em contato com você!';
     }
 }
@@ -184,50 +210,153 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.static('public'));
 
-// Rota principal
+// Página principal com QR Code
 app.get('/', (req, res) => {
-    res.json({
-        status: '🤖 Bot Alumividros funcionando!',
-        whatsapp: whatsappStatus,
-        claude: 'Conectado',
-        timestamp: new Date().toISOString(),
-        endpoints: {
-            test: '/test-claude',
-            whatsapp: '/whatsapp-webhook',
-            status: '/status'
-        }
-    });
+    const html = `
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Bot Alumividros - WhatsApp</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                margin: 0;
+                padding: 20px;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .container {
+                background: white;
+                border-radius: 20px;
+                padding: 40px;
+                text-align: center;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                max-width: 500px;
+                width: 100%;
+            }
+            h1 {
+                color: #333;
+                margin-bottom: 10px;
+            }
+            .status {
+                padding: 10px 20px;
+                border-radius: 25px;
+                margin: 20px 0;
+                font-weight: bold;
+            }
+            .connected { background: #d4edda; color: #155724; }
+            .waiting { background: #fff3cd; color: #856404; }
+            .error { background: #f8d7da; color: #721c24; }
+            .qr-container {
+                margin: 20px 0;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 10px;
+            }
+            .qr-image {
+                max-width: 100%;
+                height: auto;
+            }
+            .refresh-btn {
+                background: #007bff;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                cursor: pointer;
+                margin: 10px;
+            }
+            .refresh-btn:hover {
+                background: #0056b3;
+            }
+            .info {
+                background: #e7f3ff;
+                padding: 15px;
+                border-radius: 8px;
+                margin-top: 20px;
+                text-align: left;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Bot Alumividros</h1>
+            <p>Sistema de atendimento inteligente 24h</p>
+            
+            <div class="status ${whatsappStatus === 'Conectado' ? 'connected' : whatsappStatus.includes('Aguardando') ? 'waiting' : 'error'}">
+                Status: ${whatsappStatus}
+            </div>
+            
+            ${qrImageData ? `
+                <div class="qr-container">
+                    <h3>📱 Escaneie o QR Code com seu WhatsApp:</h3>
+                    <img src="${qrImageData}" alt="QR Code WhatsApp" class="qr-image">
+                    <br>
+                    <button class="refresh-btn" onclick="window.location.reload()">🔄 Atualizar</button>
+                </div>
+            ` : whatsappStatus === 'Conectado' ? `
+                <div class="qr-container">
+                    <h3>✅ WhatsApp Conectado!</h3>
+                    <p>Seu bot está funcionando e pronto para receber mensagens!</p>
+                </div>
+            ` : `
+                <div class="qr-container">
+                    <h3>⏳ Aguardando conexão...</h3>
+                    <button class="refresh-btn" onclick="window.location.reload()">🔄 Atualizar</button>
+                </div>
+            `}
+            
+            <div class="info">
+                <strong>📞 Informações da Alumividros:</strong><br>
+                📍 Rua Padre José Coelho, 625, Tiros/MG<br>
+                ⏰ Segunda a sexta, 7h às 17h<br>
+                📱 Instagram: @alumividros.tiros<br>
+                🤖 Claude: Conectado<br>
+                🌐 Sistema: Ativo
+            </div>
+        </div>
+        
+        <script>
+            // Auto-refresh a cada 10 segundos se aguardando QR
+            if ('${whatsappStatus}'.includes('Aguardando') || '${whatsappStatus}' === 'Desconectado') {
+                setTimeout(() => {
+                    window.location.reload();
+                }, 10000);
+            }
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
 });
 
-// Status detalhado
-app.get('/status', (req, res) => {
+// API Status
+app.get('/api/status', (req, res) => {
     res.json({
-        bot: 'Alumividros',
-        whatsapp: {
-            status: whatsappStatus,
-            client: whatsappClient ? 'Carregado' : 'Não carregado'
-        },
-        claude: 'Ativo',
-        server: 'Online',
+        whatsapp: whatsappStatus,
+        claude: 'Conectado',
+        qr: currentQR ? 'Disponível' : 'Não disponível',
         timestamp: new Date().toISOString()
     });
 });
 
-// Rota para testar Claude
+// Teste Claude
 app.post('/test-claude', async (req, res) => {
     try {
         const { message } = req.body;
-        
         if (!message) {
             return res.json({ error: 'Envie uma mensagem no campo "message"' });
         }
 
-        console.log(`🧪 Teste do Claude: ${message}`);
-        
         const resposta = await processarComClaude(message);
-        
-        console.log(`✅ Resposta do Claude: ${resposta.substring(0, 100)}...`);
         
         res.json({
             success: true,
@@ -237,35 +366,6 @@ app.post('/test-claude', async (req, res) => {
         });
         
     } catch (error) {
-        console.error('❌ Erro ao testar Claude:', error);
-        res.status(500).json({
-            error: 'Erro ao processar mensagem',
-            details: error.message
-        });
-    }
-});
-
-// Webhook para simular WhatsApp
-app.post('/whatsapp-webhook', async (req, res) => {
-    try {
-        const { message, from } = req.body;
-        
-        console.log(`📱 Webhook WhatsApp de ${from}: ${message}`);
-        
-        const resposta = await processarComClaude(message);
-        
-        console.log(`✅ Resposta gerada para ${from}`);
-        
-        res.json({
-            success: true,
-            from: from,
-            message: message,
-            response: resposta,
-            timestamp: new Date().toISOString()
-        });
-        
-    } catch (error) {
-        console.error('❌ Erro:', error);
         res.status(500).json({
             error: 'Erro ao processar mensagem',
             details: error.message
@@ -274,13 +374,14 @@ app.post('/whatsapp-webhook', async (req, res) => {
 });
 
 const server = app.listen(PORT, () => {
-    console.log(`🚀 Servidor HTTP rodando na porta ${PORT}`);
-    console.log(`🌐 Bot funcionando em: https://bot-alumividros-production.up.railway.app`);
+    console.log(`🚀 Servidor rodando na porta ${PORT}`);
+    console.log(`🌐 Acesse: https://bot-alumividros-production.up.railway.app`);
+    console.log(`📱 QR Code disponível na página principal`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-    console.log('🛑 Finalizando servidor...');
+    console.log('🛑 Finalizando...');
     if (whatsappClient) {
         whatsappClient.destroy();
     }
@@ -289,9 +390,9 @@ process.on('SIGTERM', () => {
     });
 });
 
-console.log('✅ Bot Alumividros inicializado com sucesso!');
+console.log('✅ Bot inicializado - aguarde 5 segundos para WhatsApp...');
 
-// Tentar inicializar WhatsApp após 5 segundos
+// Inicializar WhatsApp após delay
 setTimeout(() => {
     inicializarWhatsApp();
 }, 5000);
